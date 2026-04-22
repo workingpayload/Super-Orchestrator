@@ -9,6 +9,7 @@ import TaskBoard from './components/pipeline/TaskBoard';
 import OutputConsole from './components/output/OutputConsole';
 import AgentModal from './components/config/AgentModal';
 import TaskDetailModal from './components/pipeline/TaskDetailModal';
+import SkillsModal from './components/pipeline/SkillsModal';
 
 export default function App() {
   const { state } = useApp();
@@ -34,6 +35,7 @@ export default function App() {
       <StatusBar />
       {state.showAgentModal && <AgentModal />}
       {state.showTaskDetail && <TaskDetailModal />}
+      {state.showSkillsModal && <SkillsModal />}
     </div>
   );
 }

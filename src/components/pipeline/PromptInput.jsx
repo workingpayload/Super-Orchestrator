@@ -3,11 +3,12 @@ import { useApp } from '../../context/AppContext';
 
 export default function PromptInput() {
   const { state, dispatch, startOrchestration, abortOrchestration, selectDirectory } = useApp();
-  const { currentPrompt, orchestratorStatus, phase, workingDirectory, agents } = state;
+  const { currentPrompt, orchestratorStatus, phase, workingDirectory, agents, agentSkills } = state;
 
   const isRunning = phase !== 'idle' && phase !== 'completed' && phase !== 'failed' && phase !== 'aborted';
   const hasMaster = agents.some(a => a.role === 'master' && a.enabled);
   const canStart = currentPrompt.trim().length > 0 && hasMaster && !isRunning;
+  const totalSkills = Object.values(agentSkills || {}).reduce((n, arr) => n + (arr?.length || 0), 0);
 
   const handleSubmit = () => {
     if (canStart) {
@@ -26,19 +27,29 @@ export default function PromptInput() {
     <div className="prompt-section">
       <div className="prompt-header">
         <h2>📋 Pipeline</h2>
-        {isRunning ? (
-          <button className="btn btn-danger btn-sm" onClick={abortOrchestration}>
-            ⏹ Abort
-          </button>
-        ) : (
+        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
           <button
-            className="btn btn-primary"
-            onClick={handleSubmit}
-            disabled={!canStart}
+            className="btn btn-ghost btn-sm"
+            onClick={() => dispatch({ type: 'SHOW_SKILLS_MODAL' })}
+            disabled={isRunning}
+            title="Select per-agent skills for this run"
           >
-            🚀 Orchestrate
+            🧩 Skills{totalSkills > 0 ? ` (${totalSkills})` : ''}
           </button>
-        )}
+          {isRunning ? (
+            <button className="btn btn-danger btn-sm" onClick={abortOrchestration}>
+              ⏹ Abort
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary"
+              onClick={handleSubmit}
+              disabled={!canStart}
+            >
+              🚀 Orchestrate
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="prompt-textarea-wrapper">

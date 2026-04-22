@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     delete: (id) => ipcRenderer.invoke('sessions:delete', id),
   },
 
+  // Skills
+  skills: {
+    listClaude: () => ipcRenderer.invoke('skills:listClaude'),
+  },
+
   // Event listeners (for streaming)
   on: (channel, callback) => {
     const validChannels = [

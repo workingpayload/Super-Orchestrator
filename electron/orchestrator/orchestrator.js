@@ -3,6 +3,14 @@ const { TaskRunner } = require('./task-runner');
 const { ReviewManager } = require('./review-manager');
 const { v4: uuidv4 } = require('uuid');
 
+function prefixWithSkills(prompt, skills) {
+  if (!skills || skills.length === 0) return prompt;
+  const list = skills.map(s => (typeof s === 'string' ? s : s.name)).filter(Boolean);
+  if (list.length === 0) return prompt;
+  const header = `[Active skills for this run: ${list.join(', ')}]\nPrioritize these skills when applicable. Invoke them by name (e.g. /${list[0]}) if supported by the CLI.\n\n`;
+  return header + prompt;
+}
+
 /**
  * Orchestrator — the main engine that coordinates the Master → Worker → Reviewer pipeline.
  *
@@ -41,6 +49,7 @@ class Orchestrator {
       cwd,
       concurrent = true,
       maxRevisions = 3,
+      agentSkills = {},
     } = config;
 
     // Create session
@@ -54,6 +63,7 @@ class Orchestrator {
       tasks: [],
       reviewResults: [],
       revisionRound: 0,
+      agentSkills,
     };
 
     try {
@@ -71,11 +81,12 @@ class Orchestrator {
 
       const workers = this.agentManager.getAgentsByRole('worker');
       const decompositionPrompt = this.decomposer.buildDecompositionPrompt(prompt, workers.length);
+      const masterPromptWithSkills = prefixWithSkills(decompositionPrompt, agentSkills[masterId]);
 
       console.log('[Orchestrator] Sending prompt to master agent:', masterAgent.name);
-      console.log('[Orchestrator] Prompt length:', decompositionPrompt.length, 'chars');
+      console.log('[Orchestrator] Prompt length:', masterPromptWithSkills.length, 'chars');
 
-      const masterResult = await masterAgent.execute(decompositionPrompt, {
+      const masterResult = await masterAgent.execute(masterPromptWithSkills, {
         cwd,
         onData: (chunk) => {
           this._emit('orchestrator:output', {
@@ -118,6 +129,7 @@ class Orchestrator {
       let tasks = await this.taskRunner.executeTasks(decomposition.tasks, {
         cwd,
         concurrent,
+        agentSkills,
         onTaskUpdate: (task) => {
           this._emit('orchestrator:taskUpdate', task);
         },
@@ -146,8 +158,9 @@ class Orchestrator {
 
           const completedTasks = tasks.filter(t => t.status === 'completed');
           const reviewPrompt = this.reviewManager.buildReviewPrompt(completedTasks, prompt);
+          const reviewPromptWithSkills = prefixWithSkills(reviewPrompt, agentSkills[reviewerId]);
 
-          const reviewResult = await reviewerAgent.execute(reviewPrompt, {
+          const reviewResult = await reviewerAgent.execute(reviewPromptWithSkills, {
             cwd,
             onData: (chunk) => {
               this._emit('orchestrator:output', {
@@ -205,6 +218,7 @@ class Orchestrator {
             const worker = workers[0]; // Use first available worker for revisions
             await this.taskRunner.executeRevision(task, worker, {
               cwd,
+              agentSkills,
               onTaskUpdate: (t) => this._emit('orchestrator:taskUpdate', t),
               onOutput: (output) => {
                 this._emit('orchestrator:output', {
@@ -306,6 +320,7 @@ class Orchestrator {
     const worker = workers[0];
     await this.taskRunner.executeRevision(task, worker, {
       cwd: this.currentSession.cwd,
+      agentSkills: this.currentSession.agentSkills || {},
       onTaskUpdate: (t) => this._emit('orchestrator:taskUpdate', t),
       onOutput: (output) => {
         this._emit('orchestrator:output', {
@@ -346,8 +361,10 @@ class Orchestrator {
       completedTasks,
       this.currentSession.prompt
     );
+    const sessionSkills = this.currentSession.agentSkills || {};
+    const reviewPromptWithSkills = prefixWithSkills(reviewPrompt, sessionSkills[reviewerId]);
 
-    const reviewResult = await reviewerAgent.execute(reviewPrompt, {
+    const reviewResult = await reviewerAgent.execute(reviewPromptWithSkills, {
       cwd: this.currentSession.cwd,
       onData: (chunk) => {
         this._emit('orchestrator:output', {

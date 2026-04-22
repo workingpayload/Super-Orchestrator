@@ -33,8 +33,13 @@ const initialState = {
   showAgentModal: false,
   editingAgent: null,
   showTaskDetail: null,
+  showSkillsModal: false,
   phase: 'idle', // idle | decomposing | decomposed | executing | reviewing | revising | completed | failed | aborted
   phaseMessage: '',
+
+  // Skills (per-run, per-agent)
+  claudeSkills: [], // cached scan of ~/.claude/skills/
+  agentSkills: {}, // { agentId: [skillName, ...] }
 };
 
 function reducer(state, action) {
@@ -120,6 +125,29 @@ function reducer(state, action) {
     case 'SET_TASK_DETAIL':
       return { ...state, showTaskDetail: action.payload };
 
+    case 'SHOW_SKILLS_MODAL':
+      return { ...state, showSkillsModal: true };
+
+    case 'HIDE_SKILLS_MODAL':
+      return { ...state, showSkillsModal: false };
+
+    case 'SET_CLAUDE_SKILLS':
+      return { ...state, claudeSkills: action.payload };
+
+    case 'SET_AGENT_SKILLS': {
+      const { agentId, skills } = action.payload;
+      const next = { ...state.agentSkills };
+      if (!skills || skills.length === 0) {
+        delete next[agentId];
+      } else {
+        next[agentId] = skills;
+      }
+      return { ...state, agentSkills: next };
+    }
+
+    case 'CLEAR_AGENT_SKILLS':
+      return { ...state, agentSkills: {} };
+
     case 'RESET':
       return {
         ...initialState,
@@ -127,6 +155,8 @@ function reducer(state, action) {
         agentHealthStatus: state.agentHealthStatus,
         workingDirectory: state.workingDirectory,
         sessions: state.sessions,
+        claudeSkills: state.claudeSkills,
+        agentSkills: state.agentSkills,
       };
 
     default:
@@ -142,6 +172,7 @@ export function AppProvider({ children }) {
   useEffect(() => {
     loadAgents();
     loadSessions();
+    loadClaudeSkills();
 
     // Set up IPC event listeners
     const api = window.electronAPI;
@@ -287,11 +318,12 @@ export function AppProvider({ children }) {
       cwd: state.workingDirectory || undefined,
       concurrent: true,
       maxRevisions: 3,
+      agentSkills: state.agentSkills,
     };
 
     const result = await window.electronAPI.orchestrator.start(config);
     return result;
-  }, [state.agents, state.currentPrompt, state.workingDirectory]);
+  }, [state.agents, state.currentPrompt, state.workingDirectory, state.agentSkills]);
 
   const abortOrchestration = useCallback(async () => {
     if (!window.electronAPI) return;
@@ -380,6 +412,25 @@ export function AppProvider({ children }) {
     }
   }, []);
 
+  // ─── Skills Actions ───
+  const loadClaudeSkills = useCallback(async () => {
+    if (!window.electronAPI || !window.electronAPI.skills) return;
+    try {
+      const skills = await window.electronAPI.skills.listClaude();
+      dispatch({ type: 'SET_CLAUDE_SKILLS', payload: skills || [] });
+    } catch {
+      dispatch({ type: 'SET_CLAUDE_SKILLS', payload: [] });
+    }
+  }, []);
+
+  const setAgentSkills = useCallback((agentId, skills) => {
+    dispatch({ type: 'SET_AGENT_SKILLS', payload: { agentId, skills } });
+  }, []);
+
+  const clearAgentSkills = useCallback(() => {
+    dispatch({ type: 'CLEAR_AGENT_SKILLS' });
+  }, []);
+
   // ─── Utility ───
   const selectDirectory = useCallback(async () => {
     if (!window.electronAPI) return;
@@ -407,6 +458,10 @@ export function AppProvider({ children }) {
     // Session actions
     loadSessions,
     loadSession,
+    // Skills actions
+    loadClaudeSkills,
+    setAgentSkills,
+    clearAgentSkills,
     // Utility
     selectDirectory,
   };

@@ -3,6 +3,7 @@ const { AgentManager } = require('./agents/agent-manager');
 const { Orchestrator } = require('./orchestrator/orchestrator');
 const { ConfigStore } = require('./store/config-store');
 const { SessionStore } = require('./store/session-store');
+const { listClaudeSkills } = require('./skills/skill-scanner');
 
 let agentManager;
 let orchestrator;
@@ -74,6 +75,15 @@ function registerIpcHandlers() {
 
   ipcMain.handle('config:getAll', () => {
     return configStore.getAll();
+  });
+
+  // ─── Skills Handlers ───
+  ipcMain.handle('skills:listClaude', () => {
+    try {
+      return listClaudeSkills();
+    } catch (e) {
+      return [];
+    }
   });
 
   // ─── Session Handlers ───

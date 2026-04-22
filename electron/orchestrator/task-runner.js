@@ -2,6 +2,14 @@
  * TaskRunner — manages concurrent/sequential execution of tasks across worker agents.
  * Handles dependency resolution, parallel execution, streaming output, and retries.
  */
+function prefixWithSkills(prompt, skills) {
+  if (!skills || skills.length === 0) return prompt;
+  const list = skills.map(s => (typeof s === 'string' ? s : s.name)).filter(Boolean);
+  if (list.length === 0) return prompt;
+  const header = `[Active skills for this run: ${list.join(', ')}]\nPrioritize these skills when applicable. Invoke them by name (e.g. /${list[0]}) if supported by the CLI.\n\n`;
+  return header + prompt;
+}
+
 class TaskRunner {
   constructor(agentManager) {
     this.agentManager = agentManager;
@@ -16,7 +24,7 @@ class TaskRunner {
    * @returns {Promise<object[]>} Updated tasks with results
    */
   async executeTasks(tasks, options = {}) {
-    const { cwd, onTaskUpdate, onOutput, concurrent = true } = options;
+    const { cwd, onTaskUpdate, onOutput, concurrent = true, agentSkills = {} } = options;
     this.abortController = new AbortController();
 
     const completedIds = new Set();
@@ -59,7 +67,7 @@ class TaskRunner {
           // Launch all ready tasks in parallel
           const promises = ready.map((task, index) => {
             const worker = workers[index % workers.length];
-            return this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput });
+            return this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput, agentSkills });
           });
 
           // Wait for at least one to complete
@@ -91,7 +99,7 @@ class TaskRunner {
           for (const task of ready) {
             if (this.abortController.signal.aborted) break;
             const worker = workers[0]; // Use first available worker
-            const completed = await this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput });
+            const completed = await this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput, agentSkills });
             completedIds.add(completed.id);
             results.set(completed.id, completed);
           }
@@ -120,16 +128,18 @@ class TaskRunner {
    * Execute a single task with a worker agent.
    */
   async _executeTask(task, worker, options = {}) {
-    const { cwd, onTaskUpdate, onOutput } = options;
+    const { cwd, onTaskUpdate, onOutput, agentSkills = {} } = options;
 
     task.status = 'running';
     task.assignedAgent = worker.toConfig();
     task.startTime = Date.now();
     if (onTaskUpdate) onTaskUpdate({ ...task });
 
+    const promptForExec = prefixWithSkills(task.prompt, agentSkills[worker.id]);
+
     const taskPromise = (async () => {
       try {
-        const result = await worker.execute(task.prompt, {
+        const result = await worker.execute(promptForExec, {
           cwd,
           signal: this.abortController?.signal,
           onData: (chunk, source) => {
@@ -178,7 +188,10 @@ class TaskRunner {
     task.startTime = Date.now();
     if (options.onTaskUpdate) options.onTaskUpdate({ ...task });
 
-    const result = await worker.execute(task.prompt, {
+    const agentSkills = options.agentSkills || {};
+    const promptForExec = prefixWithSkills(task.prompt, agentSkills[worker.id]);
+
+    const result = await worker.execute(promptForExec, {
       cwd: options.cwd,
       onData: (chunk, source) => {
         if (options.onOutput) {
