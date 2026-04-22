@@ -1,0 +1,7 @@
+.claude
+.gemini
+/node_modules
+.codemap.md
+.codemap-meta.json
+implementation.md
+walkthrough.md

@@ -1,0 +1,224 @@
+/**
+ * TaskRunner — manages concurrent/sequential execution of tasks across worker agents.
+ * Handles dependency resolution, parallel execution, streaming output, and retries.
+ */
+class TaskRunner {
+  constructor(agentManager) {
+    this.agentManager = agentManager;
+    this.runningTasks = new Map();
+    this.abortController = null;
+  }
+
+  /**
+   * Execute all tasks respecting dependencies.
+   * @param {object[]} tasks - Array of task objects
+   * @param {object} options - { cwd, onTaskUpdate, onOutput, concurrent }
+   * @returns {Promise<object[]>} Updated tasks with results
+   */
+  async executeTasks(tasks, options = {}) {
+    const { cwd, onTaskUpdate, onOutput, concurrent = true } = options;
+    this.abortController = new AbortController();
+
+    const completedIds = new Set();
+    const taskMap = new Map(tasks.map(t => [t.id, { ...t }]));
+    const results = new Map();
+
+    // Get available workers
+    const workers = this.agentManager.getAgentsByRole('worker');
+    if (workers.length === 0) {
+      throw new Error('No worker agents configured. Please add at least one worker agent.');
+    }
+
+    // Execute tasks in dependency order
+    while (completedIds.size < tasks.length) {
+      if (this.abortController.signal.aborted) {
+        break;
+      }
+
+      // Find tasks that can run (all dependencies met)
+      const ready = tasks.filter(t =>
+        !completedIds.has(t.id) &&
+        !this.runningTasks.has(t.id) &&
+        t.dependencies.every(depId => completedIds.has(depId))
+      );
+
+      if (ready.length === 0 && this.runningTasks.size === 0) {
+        // Deadlock — remaining tasks have unresolvable dependencies
+        const remaining = tasks.filter(t => !completedIds.has(t.id));
+        for (const t of remaining) {
+          t.status = 'failed';
+          t.error = 'Dependency deadlock — cannot resolve dependencies';
+          completedIds.add(t.id);
+          if (onTaskUpdate) onTaskUpdate(t);
+        }
+        break;
+      }
+
+      if (ready.length > 0) {
+        if (concurrent) {
+          // Launch all ready tasks in parallel
+          const promises = ready.map((task, index) => {
+            const worker = workers[index % workers.length];
+            return this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput });
+          });
+
+          // Wait for at least one to complete
+          const completed = await Promise.race(
+            promises.map(p => p.then(t => {
+              completedIds.add(t.id);
+              results.set(t.id, t);
+              return t;
+            }))
+          );
+
+          // Wait for all currently running to settle
+          await Promise.allSettled(
+            Array.from(this.runningTasks.values())
+          );
+
+          // Collect all completed
+          for (const [id, promise] of this.runningTasks) {
+            try {
+              const t = await promise;
+              completedIds.add(t.id);
+              results.set(t.id, t);
+            } catch (e) {
+              completedIds.add(id);
+            }
+          }
+        } else {
+          // Sequential execution
+          for (const task of ready) {
+            if (this.abortController.signal.aborted) break;
+            const worker = workers[0]; // Use first available worker
+            const completed = await this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput });
+            completedIds.add(completed.id);
+            results.set(completed.id, completed);
+          }
+        }
+      } else {
+        // Wait for running tasks to complete
+        await Promise.allSettled(
+          Array.from(this.runningTasks.values())
+        );
+        for (const [id, promise] of this.runningTasks) {
+          try {
+            const t = await promise;
+            completedIds.add(t.id);
+            results.set(t.id, t);
+          } catch (e) {
+            completedIds.add(id);
+          }
+        }
+      }
+    }
+
+    return tasks.map(t => results.get(t.id) || t);
+  }
+
+  /**
+   * Execute a single task with a worker agent.
+   */
+  async _executeTask(task, worker, options = {}) {
+    const { cwd, onTaskUpdate, onOutput } = options;
+
+    task.status = 'running';
+    task.assignedAgent = worker.toConfig();
+    task.startTime = Date.now();
+    if (onTaskUpdate) onTaskUpdate({ ...task });
+
+    const taskPromise = (async () => {
+      try {
+        const result = await worker.execute(task.prompt, {
+          cwd,
+          signal: this.abortController?.signal,
+          onData: (chunk, source) => {
+            if (onOutput) {
+              onOutput({
+                taskId: task.id,
+                agentName: worker.name,
+                chunk,
+                source,
+                timestamp: Date.now(),
+              });
+            }
+          },
+        });
+
+        task.endTime = Date.now();
+
+        if (result.success) {
+          task.status = 'completed';
+          task.output = result.output;
+        } else {
+          task.status = 'failed';
+          task.error = result.error;
+          task.output = result.raw || '';
+        }
+      } catch (err) {
+        task.endTime = Date.now();
+        task.status = 'failed';
+        task.error = err.message;
+      }
+
+      this.runningTasks.delete(task.id);
+      if (onTaskUpdate) onTaskUpdate({ ...task });
+      return task;
+    })();
+
+    this.runningTasks.set(task.id, taskPromise);
+    return taskPromise;
+  }
+
+  /**
+   * Execute a single task revision.
+   */
+  async executeRevision(task, worker, options = {}) {
+    task.status = 'running';
+    task.startTime = Date.now();
+    if (options.onTaskUpdate) options.onTaskUpdate({ ...task });
+
+    const result = await worker.execute(task.prompt, {
+      cwd: options.cwd,
+      onData: (chunk, source) => {
+        if (options.onOutput) {
+          options.onOutput({
+            taskId: task.id,
+            agentName: worker.name,
+            chunk,
+            source,
+            timestamp: Date.now(),
+          });
+        }
+      },
+    });
+
+    task.endTime = Date.now();
+
+    if (result.success) {
+      task.status = 'completed';
+      task.output = result.output;
+      task.reviewStatus = null;
+      task.reviewFeedback = null;
+    } else {
+      task.status = 'failed';
+      task.error = result.error;
+    }
+
+    if (options.onTaskUpdate) options.onTaskUpdate({ ...task });
+    return task;
+  }
+
+  /**
+   * Abort all running tasks.
+   */
+  abort() {
+    if (this.abortController) {
+      this.abortController.abort();
+    }
+    this.agentManager.abortAll();
+    this.runningTasks.clear();
+  }
+}
+
+module.exports = { TaskRunner };
