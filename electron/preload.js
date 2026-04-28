@@ -52,6 +52,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     listClaude: () => ipcRenderer.invoke('skills:listClaude'),
   },
 
+  // Permission bridge
+  permission: {
+    decide: (id, decision) => ipcRenderer.invoke('permission:decide', id, decision),
+  },
+
   // Event listeners (for streaming)
   on: (channel, callback) => {
     const validChannels = [
@@ -59,8 +64,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'orchestrator:taskUpdate',
       'orchestrator:output',
       'orchestrator:reviewResult',
+      'orchestrator:cost',
       'orchestrator:complete',
       'orchestrator:error',
+      'permission:request',
       'agent:output',
     ];
     if (validChannels.includes(channel)) {

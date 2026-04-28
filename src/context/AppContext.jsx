@@ -40,6 +40,14 @@ const initialState = {
   // Skills (per-run, per-agent)
   claudeSkills: [], // cached scan of ~/.claude/skills/
   agentSkills: {}, // { agentId: [skillName, ...] }
+
+  // Cost tracking (current run / loaded session)
+  costSummary: { totalUsd: 0, byAgent: [] },
+
+  // Permission requests (FIFO queue, oldest shown first)
+  permissionRequests: [],
+  // Auto-approve set: tool names auto-approved for the rest of the session
+  permissionAutoApprove: new Set(),
 };
 
 function reducer(state, action) {
@@ -148,6 +156,32 @@ function reducer(state, action) {
     case 'CLEAR_AGENT_SKILLS':
       return { ...state, agentSkills: {} };
 
+    case 'SET_COST':
+      return {
+        ...state,
+        costSummary: action.payload || { totalUsd: 0, byAgent: [] },
+      };
+
+    case 'PERMISSION_ENQUEUE':
+      // Skip if already in queue (dedupe by id)
+      if (state.permissionRequests.some(r => r.id === action.payload.id)) return state;
+      return { ...state, permissionRequests: [...state.permissionRequests, action.payload] };
+
+    case 'PERMISSION_DEQUEUE':
+      return {
+        ...state,
+        permissionRequests: state.permissionRequests.filter(r => r.id !== action.payload),
+      };
+
+    case 'PERMISSION_AUTO_APPROVE_ADD': {
+      const next = new Set(state.permissionAutoApprove);
+      next.add(action.payload);
+      return { ...state, permissionAutoApprove: next };
+    }
+
+    case 'PERMISSION_AUTO_APPROVE_CLEAR':
+      return { ...state, permissionAutoApprove: new Set() };
+
     case 'RESET':
       return {
         ...initialState,
@@ -219,10 +253,30 @@ export function AppProvider({ children }) {
       dispatch({ type: 'ADD_REVIEW_RESULT', payload: data });
     }));
 
+    cleanups.push(api.on('orchestrator:cost', (data) => {
+      dispatch({
+        type: 'SET_COST',
+        payload: { totalUsd: data.totalUsd || 0, byAgent: data.byAgent || [] },
+      });
+    }));
+
+    cleanups.push(api.on('permission:request', (req) => {
+      dispatch({ type: 'PERMISSION_ENQUEUE', payload: req });
+    }));
+
     cleanups.push(api.on('orchestrator:complete', (data) => {
       dispatch({ type: 'SET_PHASE', payload: { phase: 'completed', message: data.message } });
       dispatch({ type: 'SET_STATUS', payload: 'completed' });
       dispatch({ type: 'SET_SESSION', payload: data.session });
+      if (data.session?.cost) {
+        dispatch({
+          type: 'SET_COST',
+          payload: {
+            totalUsd: data.session.cost.totalUsd || 0,
+            byAgent: Object.values(data.session.cost.byAgent || {}),
+          },
+        });
+      }
       loadSessions();
     }));
 
@@ -389,6 +443,17 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_SESSION', payload: session });
     dispatch({ type: 'SET_DECOMPOSITION', payload: session.decomposition || null });
     dispatch({ type: 'SET_TASKS', payload: session.tasks || [] });
+    if (session.cost) {
+      dispatch({
+        type: 'SET_COST',
+        payload: {
+          totalUsd: session.cost.totalUsd || 0,
+          byAgent: Object.values(session.cost.byAgent || {}),
+        },
+      });
+    } else {
+      dispatch({ type: 'SET_COST', payload: { totalUsd: 0, byAgent: [] } });
+    }
     dispatch({
       type: 'SET_PHASE',
       payload: { phase: session.status || 'completed', message: `Loaded session from ${new Date(session.startTime).toLocaleString()}` },
@@ -431,6 +496,17 @@ export function AppProvider({ children }) {
     dispatch({ type: 'CLEAR_AGENT_SKILLS' });
   }, []);
 
+  // ─── Permission Actions ───
+  const decidePermission = useCallback(async (id, decision) => {
+    if (!window.electronAPI?.permission) return;
+    await window.electronAPI.permission.decide(id, decision);
+    dispatch({ type: 'PERMISSION_DEQUEUE', payload: id });
+  }, []);
+
+  const allowAlwaysForTool = useCallback((toolName) => {
+    dispatch({ type: 'PERMISSION_AUTO_APPROVE_ADD', payload: toolName });
+  }, []);
+
   // ─── Utility ───
   const selectDirectory = useCallback(async () => {
     if (!window.electronAPI) return;
@@ -462,6 +538,9 @@ export function AppProvider({ children }) {
     loadClaudeSkills,
     setAgentSkills,
     clearAgentSkills,
+    // Permission actions
+    decidePermission,
+    allowAlwaysForTool,
     // Utility
     selectDirectory,
   };

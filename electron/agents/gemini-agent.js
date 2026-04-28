@@ -8,8 +8,9 @@ class GeminiAgent extends BaseAgent {
   constructor(config) {
     super({ ...config, type: 'gemini' });
     this.cliPath = config.cliPath || 'gemini';
-    this.outputFormat = config.outputFormat || 'text';
+    this.outputFormat = 'json'; // force json so usage is parseable
     this.model = config.model || '';
+    this.autoApprove = config.autoApprove !== false; // default true
   }
 
   toConfig() {
@@ -17,21 +18,22 @@ class GeminiAgent extends BaseAgent {
       ...super.toConfig(),
       model: this.model,
       outputFormat: this.outputFormat,
+      autoApprove: this.autoApprove,
     };
   }
 
   buildCommand(prompt, options = {}) {
     const args = [];
 
-    if (this.outputFormat) {
-      args.push('--output-format', this.outputFormat);
-    }
+    args.push('--output-format', 'json');
 
     if (this.model) {
       args.push('-m', this.model);
     }
 
-    args.push('--sandbox=none');
+    if (this.autoApprove) {
+      args.push('--sandbox=none');
+    }
     args.push(...this.extraFlags);
 
     return args;
@@ -63,6 +65,41 @@ class GeminiAgent extends BaseAgent {
       return JSON.stringify(d, null, 2);
     }
     return parsed.data;
+  }
+
+  extractUsage(raw, parsed) {
+    const find = (obj, key) => {
+      if (!obj || typeof obj !== 'object') return null;
+      if (key in obj) return obj[key];
+      if (Array.isArray(obj)) {
+        for (const i of obj) { const v = find(i, key); if (v) return v; }
+      } else {
+        for (const k of Object.keys(obj)) { const v = find(obj[k], key); if (v) return v; }
+      }
+      return null;
+    };
+
+    let payload = parsed?.type === 'json' ? parsed.data : null;
+    if (!payload) {
+      try { payload = JSON.parse(raw); } catch { return null; }
+    }
+
+    const meta = find(payload, 'usageMetadata') || find(payload, 'usage_metadata') || {};
+    const stats = find(payload, 'stats') || {};
+    const inputTokens =
+      Number(meta.promptTokenCount || meta.prompt_token_count || stats.promptTokenCount || 0);
+    const outputTokens =
+      Number(
+        meta.candidatesTokenCount ||
+        meta.candidates_token_count ||
+        stats.candidatesTokenCount ||
+        meta.responseTokenCount || 0
+      );
+    const cacheReadTokens =
+      Number(meta.cachedContentTokenCount || meta.cached_content_token_count || 0);
+
+    if (!inputTokens && !outputTokens && !cacheReadTokens) return null;
+    return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, costUsd: null };
   }
 }
 

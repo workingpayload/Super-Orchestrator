@@ -20,7 +20,19 @@ class AgentManager {
    */
   _loadAgents() {
     const savedAgents = this.configStore.get('agents') || [];
+    let migrated = false;
     for (const config of savedAgents) {
+      // One-shot migration: any Claude agent without an explicit permissionMode
+      // is forced to 'bypass' to avoid silent permission hangs.
+      if (config.type === 'claude' && !config.permissionMode) {
+        config.permissionMode = 'bypass';
+        migrated = true;
+      }
+      // Codex/Gemini default autoApprove true if missing.
+      if ((config.type === 'codex' || config.type === 'gemini') && config.autoApprove === undefined) {
+        config.autoApprove = true;
+        migrated = true;
+      }
       const agent = this._createAgent(config);
       if (agent) {
         this.agents.set(config.id, agent);
@@ -30,6 +42,8 @@ class AgentManager {
     // If no agents configured, create defaults
     if (this.agents.size === 0) {
       this._createDefaults();
+    } else if (migrated) {
+      this._saveAgents();
     }
   }
 

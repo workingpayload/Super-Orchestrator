@@ -59,6 +59,17 @@ class BaseAgent {
   }
 
   /**
+   * Extract token usage from raw CLI output if available.
+   * Override in subclasses to scrape usage from CLI JSON.
+   * @param {string} raw - Raw stdout
+   * @param {object} parsed - Parsed output from parseOutput
+   * @returns {object|null} { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd? } or null
+   */
+  extractUsage(raw, parsed) {
+    return null;
+  }
+
+  /**
    * Extract the final text content from parsed output.
    * Override in subclasses for agent-specific extraction.
    * @param {object} parsed - Parsed output from parseOutput
@@ -89,6 +100,14 @@ class BaseAgent {
       let stderr = '';
 
       const stdinInput = this.getStdinInput(prompt, options);
+
+      // Debug: echo the resolved command + cwd back so it shows up in OutputConsole.
+      const cmdLine = `$ ${this.cliPath} ${args.join(' ')}`;
+      console.log(`[${this.name}] cwd=${cwd}`);
+      console.log(`[${this.name}] cmd=${cmdLine}`);
+      if (options.onData) {
+        options.onData(`${cmdLine}\n  (cwd: ${cwd})\n`, 'system');
+      }
 
       this.process = spawn(this.cliPath, args, {
         cwd,
@@ -133,11 +152,18 @@ class BaseAgent {
         if (code === 0 || stdout.trim().length > 0) {
           const parsed = this.parseOutput(stdout.trim());
           const text = this.extractText(parsed);
+          let usage = null;
+          try {
+            usage = this.extractUsage(stdout.trim(), parsed);
+          } catch (_) {}
           resolve({
             success: true,
             output: text,
             raw: stdout.trim(),
             parsed,
+            usage,
+            model: this.model || null,
+            agentType: this.type,
           });
         } else {
           resolve({

@@ -24,7 +24,7 @@ class TaskRunner {
    * @returns {Promise<object[]>} Updated tasks with results
    */
   async executeTasks(tasks, options = {}) {
-    const { cwd, onTaskUpdate, onOutput, concurrent = true, agentSkills = {} } = options;
+    const { cwd, bridgePort, onTaskUpdate, onOutput, concurrent = true, agentSkills = {}, onAgentResult } = options;
     this.abortController = new AbortController();
 
     const completedIds = new Set();
@@ -67,7 +67,7 @@ class TaskRunner {
           // Launch all ready tasks in parallel
           const promises = ready.map((task, index) => {
             const worker = workers[index % workers.length];
-            return this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput, agentSkills });
+            return this._executeTask(task, worker, { cwd, bridgePort, onTaskUpdate, onOutput, agentSkills, onAgentResult });
           });
 
           // Wait for at least one to complete
@@ -99,7 +99,7 @@ class TaskRunner {
           for (const task of ready) {
             if (this.abortController.signal.aborted) break;
             const worker = workers[0]; // Use first available worker
-            const completed = await this._executeTask(task, worker, { cwd, onTaskUpdate, onOutput, agentSkills });
+            const completed = await this._executeTask(task, worker, { cwd, bridgePort, onTaskUpdate, onOutput, agentSkills, onAgentResult });
             completedIds.add(completed.id);
             results.set(completed.id, completed);
           }
@@ -128,7 +128,7 @@ class TaskRunner {
    * Execute a single task with a worker agent.
    */
   async _executeTask(task, worker, options = {}) {
-    const { cwd, onTaskUpdate, onOutput, agentSkills = {} } = options;
+    const { cwd, bridgePort, onTaskUpdate, onOutput, agentSkills = {}, onAgentResult } = options;
 
     task.status = 'running';
     task.assignedAgent = worker.toConfig();
@@ -141,6 +141,7 @@ class TaskRunner {
       try {
         const result = await worker.execute(promptForExec, {
           cwd,
+          bridgePort,
           signal: this.abortController?.signal,
           onData: (chunk, source) => {
             if (onOutput) {
@@ -160,11 +161,14 @@ class TaskRunner {
         if (result.success) {
           task.status = 'completed';
           task.output = result.output;
+          task.usage = result.usage || null;
         } else {
           task.status = 'failed';
           task.error = result.error;
           task.output = result.raw || '';
         }
+
+        if (onAgentResult) onAgentResult(worker, result);
       } catch (err) {
         task.endTime = Date.now();
         task.status = 'failed';
@@ -193,6 +197,7 @@ class TaskRunner {
 
     const result = await worker.execute(promptForExec, {
       cwd: options.cwd,
+      bridgePort: options.bridgePort,
       onData: (chunk, source) => {
         if (options.onOutput) {
           options.onOutput({
@@ -211,6 +216,7 @@ class TaskRunner {
     if (result.success) {
       task.status = 'completed';
       task.output = result.output;
+      task.usage = result.usage || null;
       task.reviewStatus = null;
       task.reviewFeedback = null;
     } else {
@@ -218,6 +224,7 @@ class TaskRunner {
       task.error = result.error;
     }
 
+    if (options.onAgentResult) options.onAgentResult(worker, result);
     if (options.onTaskUpdate) options.onTaskUpdate({ ...task });
     return task;
   }

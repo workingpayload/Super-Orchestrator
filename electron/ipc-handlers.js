@@ -1,9 +1,10 @@
-const { ipcMain } = require('electron');
+const { ipcMain, BrowserWindow } = require('electron');
 const { AgentManager } = require('./agents/agent-manager');
 const { Orchestrator } = require('./orchestrator/orchestrator');
 const { ConfigStore } = require('./store/config-store');
 const { SessionStore } = require('./store/session-store');
 const { listClaudeSkills } = require('./skills/skill-scanner');
+const { getBridge } = require('./permission/permission-bridge');
 
 let agentManager;
 let orchestrator;
@@ -15,6 +16,19 @@ function registerIpcHandlers() {
   sessionStore = new SessionStore();
   agentManager = new AgentManager(configStore);
   orchestrator = new Orchestrator(agentManager, sessionStore);
+
+  // Permission bridge — forwards Claude permission requests to the renderer.
+  const bridge = getBridge();
+  bridge.setRequestHandler((req) => {
+    const wins = BrowserWindow.getAllWindows();
+    for (const w of wins) {
+      if (!w.isDestroyed()) w.webContents.send('permission:request', req);
+    }
+  });
+
+  ipcMain.handle('permission:decide', (_event, id, decision) => {
+    return bridge.decide(id, decision);
+  });
 
   // ─── Agent Handlers ───
   ipcMain.handle('agents:list', () => {

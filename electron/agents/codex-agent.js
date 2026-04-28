@@ -10,12 +10,14 @@ class CodexAgent extends BaseAgent {
     this.cliPath = config.cliPath || 'codex';
     this.model = config.model || '';
     this.ephemeral = config.ephemeral !== false;
+    this.autoApprove = config.autoApprove !== false; // default true
   }
 
   toConfig() {
     return {
       ...super.toConfig(),
       model: this.model,
+      autoApprove: this.autoApprove,
     };
   }
 
@@ -28,7 +30,7 @@ class CodexAgent extends BaseAgent {
         args.push('--ephemeral');
       }
       args.push('--skip-git-repo-check');
-      args.push('--full-auto');
+      if (this.autoApprove) args.push('--full-auto');
     }
 
     if (this.model) {

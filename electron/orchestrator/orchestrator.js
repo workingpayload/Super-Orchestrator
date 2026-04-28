@@ -1,6 +1,8 @@
 const { TaskDecomposer } = require('./task-decomposer');
 const { TaskRunner } = require('./task-runner');
 const { ReviewManager } = require('./review-manager');
+const { computeCost } = require('../pricing/pricing');
+const { getBridge } = require('../permission/permission-bridge');
 const { v4: uuidv4 } = require('uuid');
 
 function prefixWithSkills(prompt, skills) {
@@ -52,6 +54,9 @@ class Orchestrator {
       agentSkills = {},
     } = config;
 
+    // Ensure permission bridge is up so any Claude agent in 'ui-prompt' mode works.
+    const bridgePort = await getBridge().start();
+
     // Create session
     this.currentSession = {
       id: uuidv4(),
@@ -64,6 +69,7 @@ class Orchestrator {
       reviewResults: [],
       revisionRound: 0,
       agentSkills,
+      cost: { totalUsd: 0, byAgent: {} },
     };
 
     try {
@@ -88,6 +94,7 @@ class Orchestrator {
 
       const masterResult = await masterAgent.execute(masterPromptWithSkills, {
         cwd,
+        bridgePort,
         onData: (chunk) => {
           this._emit('orchestrator:output', {
             phase: 'decomposing',
@@ -98,6 +105,8 @@ class Orchestrator {
       });
 
       console.log('[Orchestrator] Master result:', { success: masterResult.success, outputLen: (masterResult.output || '').length, error: masterResult.error });
+
+      this._recordCost(masterAgent, masterResult, 'master');
 
       if (!masterResult.success) {
         throw new Error(`Master agent failed: ${masterResult.error}`);
@@ -128,6 +137,7 @@ class Orchestrator {
 
       let tasks = await this.taskRunner.executeTasks(decomposition.tasks, {
         cwd,
+        bridgePort,
         concurrent,
         agentSkills,
         onTaskUpdate: (task) => {
@@ -139,6 +149,7 @@ class Orchestrator {
             ...output,
           });
         },
+        onAgentResult: (agent, result) => this._recordCost(agent, result, 'worker'),
       });
 
       this.currentSession.tasks = tasks;
@@ -162,6 +173,7 @@ class Orchestrator {
 
           const reviewResult = await reviewerAgent.execute(reviewPromptWithSkills, {
             cwd,
+            bridgePort,
             onData: (chunk) => {
               this._emit('orchestrator:output', {
                 phase: 'reviewing',
@@ -170,6 +182,8 @@ class Orchestrator {
               });
             },
           });
+
+          this._recordCost(reviewerAgent, reviewResult, 'reviewer');
 
           if (!reviewResult.success) {
             console.error('[Orchestrator] Reviewer failed:', reviewResult.error, 'Raw:', reviewResult.raw);
@@ -218,6 +232,7 @@ class Orchestrator {
             const worker = workers[0]; // Use first available worker for revisions
             await this.taskRunner.executeRevision(task, worker, {
               cwd,
+              bridgePort,
               agentSkills,
               onTaskUpdate: (t) => this._emit('orchestrator:taskUpdate', t),
               onOutput: (output) => {
@@ -226,6 +241,7 @@ class Orchestrator {
                   ...output,
                 });
               },
+              onAgentResult: (a, r) => this._recordCost(a, r, 'worker'),
             });
           }
 
@@ -318,8 +334,10 @@ class Orchestrator {
     });
 
     const worker = workers[0];
+    const bridgePort = await getBridge().start();
     await this.taskRunner.executeRevision(task, worker, {
       cwd: this.currentSession.cwd,
+      bridgePort,
       agentSkills: this.currentSession.agentSkills || {},
       onTaskUpdate: (t) => this._emit('orchestrator:taskUpdate', t),
       onOutput: (output) => {
@@ -328,6 +346,7 @@ class Orchestrator {
           ...output,
         });
       },
+      onAgentResult: (a, r) => this._recordCost(a, r, 'worker'),
     });
 
     this.sessionStore.saveSession(this.currentSession);
@@ -364,8 +383,10 @@ class Orchestrator {
     const sessionSkills = this.currentSession.agentSkills || {};
     const reviewPromptWithSkills = prefixWithSkills(reviewPrompt, sessionSkills[reviewerId]);
 
+    const bridgePort = await getBridge().start();
     const reviewResult = await reviewerAgent.execute(reviewPromptWithSkills, {
       cwd: this.currentSession.cwd,
+      bridgePort,
       onData: (chunk) => {
         this._emit('orchestrator:output', {
           phase: 'reviewing',
@@ -374,6 +395,8 @@ class Orchestrator {
         });
       },
     });
+
+    this._recordCost(reviewerAgent, reviewResult, 'reviewer');
 
     if (!reviewResult.success) {
       console.error('[Orchestrator] Re-review failed:', reviewResult.error);
@@ -433,6 +456,57 @@ class Orchestrator {
       status: this.status,
       session: this.currentSession,
     };
+  }
+
+  /**
+   * Record cost from a single agent invocation onto the session totals.
+   * Emits orchestrator:cost with the running summary.
+   */
+  _recordCost(agent, result, role) {
+    if (!this.currentSession || !result) return;
+    const usage = result.usage;
+    if (!usage) return;
+
+    const reportedCost = typeof usage.costUsd === 'number' ? usage.costUsd : null;
+    const computed = computeCost(usage, agent.type, agent.model || result.model);
+    const callCost = reportedCost != null ? reportedCost : computed;
+
+    const cost = this.currentSession.cost || (this.currentSession.cost = { totalUsd: 0, byAgent: {} });
+    if (!cost.byAgent[agent.id]) {
+      cost.byAgent[agent.id] = {
+        agentId: agent.id,
+        agentName: agent.name,
+        agentType: agent.type,
+        role: role || agent.role,
+        model: agent.model || null,
+        calls: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalUsd: 0,
+      };
+    }
+    const slot = cost.byAgent[agent.id];
+    slot.calls += 1;
+    slot.inputTokens += Number(usage.inputTokens || 0);
+    slot.outputTokens += Number(usage.outputTokens || 0);
+    slot.cacheReadTokens += Number(usage.cacheReadTokens || 0);
+    slot.cacheWriteTokens += Number(usage.cacheWriteTokens || 0);
+    slot.totalUsd += callCost;
+    cost.totalUsd += callCost;
+
+    this._emit('orchestrator:cost', {
+      totalUsd: cost.totalUsd,
+      byAgent: Object.values(cost.byAgent),
+      lastCall: {
+        agentId: agent.id,
+        agentName: agent.name,
+        role: role || agent.role,
+        costUsd: callCost,
+        usage,
+      },
+    });
   }
 
   /**

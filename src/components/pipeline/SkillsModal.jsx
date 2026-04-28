@@ -1,5 +1,39 @@
 import React, { useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Puzzle,
+  RefreshCw,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+  Plus,
+  X,
+  Search,
+} from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { cn } from '@/lib/utils';
+
+const TYPE_GRADIENT = {
+  claude: 'from-amber-500 to-orange-600',
+  gemini: 'from-blue-500 to-cyan-500',
+  codex: 'from-emerald-500 to-green-600',
+  custom: 'from-violet-500 to-purple-600',
+};
+
+const TYPE_LETTER = { claude: 'C', gemini: 'G', codex: 'X', custom: '⚙' };
 
 export default function SkillsModal() {
   const { state, dispatch, setAgentSkills, clearAgentSkills, loadClaudeSkills } = useApp();
@@ -7,21 +41,15 @@ export default function SkillsModal() {
 
   const close = () => dispatch({ type: 'HIDE_SKILLS_MODAL' });
 
-  const enabledAgents = useMemo(
-    () => agents.filter(a => a.enabled !== false),
-    [agents]
-  );
-
-  const [expandedAgentId, setExpandedAgentId] = useState(
-    enabledAgents[0]?.id || null
-  );
+  const enabledAgents = useMemo(() => agents.filter((a) => a.enabled !== false), [agents]);
+  const [expandedAgentId, setExpandedAgentId] = useState(enabledAgents[0]?.id || null);
   const [filter, setFilter] = useState('');
   const [customInput, setCustomInput] = useState({});
 
   const toggleClaudeSkill = (agentId, skillName) => {
     const current = agentSkills[agentId] || [];
     const next = current.includes(skillName)
-      ? current.filter(s => s !== skillName)
+      ? current.filter((s) => s !== skillName)
       : [...current, skillName];
     setAgentSkills(agentId, next);
   };
@@ -29,223 +57,235 @@ export default function SkillsModal() {
   const addCustomSkill = (agentId) => {
     const raw = (customInput[agentId] || '').trim();
     if (!raw) return;
-    const names = raw.split(',').map(s => s.trim()).filter(Boolean);
-    const current = agentSkills[agentId] || [];
-    const merged = Array.from(new Set([...current, ...names]));
+    const names = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const merged = Array.from(new Set([...(agentSkills[agentId] || []), ...names]));
     setAgentSkills(agentId, merged);
-    setCustomInput(prev => ({ ...prev, [agentId]: '' }));
+    setCustomInput((prev) => ({ ...prev, [agentId]: '' }));
   };
 
-  const removeCustomSkill = (agentId, skillName) => {
+  const removeSkill = (agentId, name) => {
     const current = agentSkills[agentId] || [];
-    setAgentSkills(agentId, current.filter(s => s !== skillName));
+    setAgentSkills(agentId, current.filter((s) => s !== name));
   };
 
   const filteredSkills = useMemo(() => {
     if (!filter.trim()) return claudeSkills;
     const q = filter.toLowerCase();
-    return claudeSkills.filter(s =>
-      (s.name || '').toLowerCase().includes(q) ||
-      (s.description || '').toLowerCase().includes(q) ||
-      (s.displayName || '').toLowerCase().includes(q)
+    return claudeSkills.filter(
+      (s) =>
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.description || '').toLowerCase().includes(q) ||
+        (s.displayName || '').toLowerCase().includes(q)
     );
   }, [claudeSkills, filter]);
 
   const totalSelected = Object.values(agentSkills).reduce((sum, arr) => sum + (arr?.length || 0), 0);
 
   return (
-    <div className="modal-overlay" onClick={close}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 720, maxHeight: '80vh' }}>
-        <div className="modal-header">
-          <h2>🧩 Skills (per run)</h2>
-          <button className="btn-icon" onClick={close}>✕</button>
+    <Dialog open onOpenChange={(v) => !v && close()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col p-0 gap-0">
+        <DialogHeader className="p-5 pb-3 border-b border-border/60">
+          <div className="flex items-center gap-2 pr-8">
+            <Puzzle className="h-5 w-5 text-accent" />
+            <DialogTitle>Skills · per run</DialogTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Select skills per agent. Applies to this run only. Claude reads <code className="font-mono text-foreground/80">~/.claude/skills/</code>;
+            others accept freeform names hinted in the prompt.
+          </p>
+        </DialogHeader>
+
+        <div className="px-5 py-3 flex items-center gap-2 border-b border-border/60 bg-secondary/20">
+          <Button variant="outline" size="sm" onClick={loadClaudeSkills} className="gap-1.5">
+            <RefreshCw className="h-3.5 w-3.5" />
+            Rescan
+          </Button>
+          {totalSelected > 0 && (
+            <Button variant="ghost" size="sm" onClick={clearAgentSkills} className="gap-1.5 text-destructive hover:text-destructive">
+              <Trash2 className="h-3.5 w-3.5" />
+              Clear all
+            </Button>
+          )}
+          <span className="ml-auto text-xs text-muted-foreground">
+            <Badge variant="outline" className="font-mono mr-1">{claudeSkills.length}</Badge>
+            detected ·
+            <Badge variant="accent" className="font-mono ml-2">{totalSelected}</Badge>
+            selected
+          </span>
         </div>
 
-        <div className="modal-body" style={{ overflow: 'auto' }}>
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: 'var(--space-3)' }}>
-            Select skills for each agent. Selections apply to this orchestration run only.
-            Claude agents show detected skills from <code>~/.claude/skills/</code> and plugin caches.
-            Other agents accept freeform skill names (hinted in the prompt).
-          </div>
+        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-5">
+          <div className="py-4 space-y-2">
+            {enabledAgents.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <Puzzle className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                <div className="text-sm font-semibold">No enabled agents</div>
+                <div className="text-xs mt-1">Add and enable agents first.</div>
+              </div>
+            ) : (
+              enabledAgents.map((agent) => {
+                const selected = agentSkills[agent.id] || [];
+                const isExpanded = expandedAgentId === agent.id;
+                const isClaude = agent.type === 'claude';
 
-          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
-            <button className="btn btn-ghost btn-sm" onClick={loadClaudeSkills}>🔄 Rescan</button>
-            {totalSelected > 0 && (
-              <button className="btn btn-ghost btn-sm" onClick={clearAgentSkills}>🗑 Clear all</button>
-            )}
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-              {claudeSkills.length} skills detected · {totalSelected} selected
-            </span>
-          </div>
-
-          {enabledAgents.length === 0 && (
-            <div className="empty-state">
-              <div className="empty-state-title">No enabled agents</div>
-              <div className="empty-state-description">Add and enable agents first.</div>
-            </div>
-          )}
-
-          {enabledAgents.map(agent => {
-            const selected = agentSkills[agent.id] || [];
-            const isExpanded = expandedAgentId === agent.id;
-            const isClaude = agent.type === 'claude';
-
-            return (
-              <div key={agent.id} style={{
-                border: '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-md)',
-                marginBottom: 'var(--space-2)',
-                overflow: 'hidden',
-              }}>
-                <div
-                  onClick={() => setExpandedAgentId(isExpanded ? null : agent.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                    padding: 'var(--space-2) var(--space-3)',
-                    cursor: 'pointer',
-                    background: 'var(--bg-elevated)',
-                  }}
-                >
-                  <div className={`agent-card-icon ${agent.type}`} style={{ width: 24, height: 24, fontSize: 'var(--text-xs)' }}>
-                    {agent.type === 'claude' ? 'C' : agent.type === 'gemini' ? 'G' : agent.type === 'codex' ? 'X' : '⚙'}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>{agent.name}</div>
-                    <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
-                      {agent.role} · {selected.length} skill{selected.length === 1 ? '' : 's'} selected
-                    </div>
-                  </div>
-                  <span style={{ fontSize: 'var(--text-sm)' }}>{isExpanded ? '▾' : '▸'}</span>
-                </div>
-
-                {isExpanded && (
-                  <div style={{ padding: 'var(--space-3)' }}>
-                    {selected.length > 0 && (
-                      <div style={{ marginBottom: 'var(--space-3)', display: 'flex', flexWrap: 'wrap', gap: 'var(--space-1)' }}>
-                        {selected.map(name => (
-                          <span
-                            key={name}
-                            className="role-badge worker"
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                          >
-                            {name}
-                            <button
-                              className="btn-icon"
-                              style={{ padding: 0, marginLeft: 4, fontSize: 'var(--text-xs)' }}
-                              onClick={() => removeCustomSkill(agent.id, name)}
-                              title="Remove"
-                            >✕</button>
-                          </span>
-                        ))}
+                return (
+                  <motion.div
+                    key={agent.id}
+                    layout
+                    className="rounded-xl border border-border/60 bg-card/40 backdrop-blur-sm overflow-hidden"
+                  >
+                    <button
+                      onClick={() => setExpandedAgentId(isExpanded ? null : agent.id)}
+                      className="w-full flex items-center gap-3 p-3 hover:bg-secondary/30 transition-colors"
+                    >
+                      <div
+                        className={cn(
+                          'h-8 w-8 rounded-md bg-gradient-to-br flex items-center justify-center text-white font-bold text-sm shadow-md',
+                          TYPE_GRADIENT[agent.type] || TYPE_GRADIENT.custom
+                        )}
+                      >
+                        {TYPE_LETTER[agent.type] || '⚙'}
                       </div>
-                    )}
+                      <div className="flex-1 text-left">
+                        <div className="text-sm font-semibold">{agent.name}</div>
+                        <div className="text-[10px] text-muted-foreground capitalize">
+                          {agent.role} · {selected.length} skill{selected.length === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                      {isExpanded ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </button>
 
-                    {isClaude ? (
-                      <>
-                        <input
-                          className="form-input"
-                          placeholder="Filter skills..."
-                          value={filter}
-                          onChange={e => setFilter(e.target.value)}
-                          style={{ marginBottom: 'var(--space-2)' }}
-                        />
-                        <div style={{
-                          maxHeight: 280,
-                          overflow: 'auto',
-                          border: '1px solid var(--border-subtle)',
-                          borderRadius: 'var(--radius-sm)',
-                          padding: 'var(--space-2)',
-                        }}>
-                          {filteredSkills.length === 0 && (
-                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
-                              {claudeSkills.length === 0
-                                ? 'No skills detected. Place skills under ~/.claude/skills/<name>/SKILL.md'
-                                : 'No matches for filter.'}
-                            </div>
-                          )}
-                          {filteredSkills.map(skill => {
-                            const isChecked = selected.includes(skill.name);
-                            return (
-                              <label
-                                key={`${skill.source}|${skill.name}`}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'flex-start',
-                                  gap: 'var(--space-2)',
-                                  padding: 'var(--space-1) var(--space-2)',
-                                  cursor: 'pointer',
-                                  borderRadius: 'var(--radius-sm)',
-                                }}
-                                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
-                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => toggleClaudeSkill(agent.id, skill.name)}
-                                  style={{ marginTop: 4 }}
-                                />
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ fontSize: 'var(--text-sm)', fontWeight: 500 }}>
-                                    {skill.name}
-                                    <span style={{
-                                      marginLeft: 'var(--space-2)',
-                                      fontSize: 'var(--text-xs)',
-                                      color: 'var(--text-muted)',
-                                      fontWeight: 400,
-                                    }}>
-                                      {skill.source}
-                                    </span>
-                                  </div>
-                                  {skill.description && (
-                                    <div style={{
-                                      fontSize: 'var(--text-xs)',
-                                      color: 'var(--text-muted)',
-                                      lineHeight: 1.4,
-                                      marginTop: 2,
-                                    }}>
-                                      {skill.description}
+                    <AnimatePresence initial={false}>
+                      {isExpanded && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="p-3 pt-0 border-t border-border/40 space-y-3">
+                            {selected.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {selected.map((name) => (
+                                  <motion.span
+                                    key={name}
+                                    layout
+                                    initial={{ opacity: 0, scale: 0.8 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.8 }}
+                                    className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent/15 text-accent px-2 py-0.5 text-[10px] font-semibold"
+                                  >
+                                    {name}
+                                    <button
+                                      onClick={() => removeSkill(agent.id, name)}
+                                      className="hover:text-destructive"
+                                    >
+                                      <X className="h-2.5 w-2.5" />
+                                    </button>
+                                  </motion.span>
+                                ))}
+                              </div>
+                            )}
+
+                            {isClaude ? (
+                              <div className="space-y-2">
+                                <div className="relative">
+                                  <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                                  <Input
+                                    placeholder="Filter skills…"
+                                    value={filter}
+                                    onChange={(e) => setFilter(e.target.value)}
+                                    className="pl-8 h-9"
+                                  />
+                                </div>
+                                <div className="rounded-lg border border-border/60 bg-secondary/20 max-h-72 overflow-auto scrollbar-thin">
+                                  {filteredSkills.length === 0 ? (
+                                    <div className="p-4 text-center text-xs text-muted-foreground">
+                                      {claudeSkills.length === 0
+                                        ? 'No skills detected. Place at ~/.claude/skills/<name>/SKILL.md'
+                                        : 'No matches for filter.'}
                                     </div>
+                                  ) : (
+                                    filteredSkills.map((skill) => {
+                                      const checked = selected.includes(skill.name);
+                                      return (
+                                        <label
+                                          key={`${skill.source}|${skill.name}`}
+                                          className="flex items-start gap-2.5 px-3 py-2 cursor-pointer hover:bg-secondary/40 transition-colors border-b border-border/30 last:border-0"
+                                        >
+                                          <Checkbox
+                                            checked={checked}
+                                            onCheckedChange={() => toggleClaudeSkill(agent.id, skill.name)}
+                                            className="mt-0.5"
+                                          />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-baseline gap-2">
+                                              <span className="text-sm font-medium">{skill.name}</span>
+                                              <span className="text-[10px] text-muted-foreground font-mono">
+                                                {skill.source}
+                                              </span>
+                                            </div>
+                                            {skill.description && (
+                                              <div className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                                                {skill.description}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </label>
+                                      );
+                                    })
                                   )}
                                 </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <label className="form-label">Add skill names (comma-separated)</label>
-                        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                          <input
-                            className="form-input"
-                            placeholder="e.g. code-review, tdd, refactor"
-                            value={customInput[agent.id] || ''}
-                            onChange={e => setCustomInput(prev => ({ ...prev, [agent.id]: e.target.value }))}
-                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustomSkill(agent.id); } }}
-                          />
-                          <button className="btn btn-primary btn-sm" onClick={() => addCustomSkill(agent.id)}>
-                            Add
-                          </button>
-                        </div>
-                        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 'var(--space-1)' }}>
-                          Gemini/Codex/Custom CLIs — skill names are injected as prompt hints.
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                              </div>
+                            ) : (
+                              <div className="space-y-2">
+                                <Label>Add skill names (comma-separated)</Label>
+                                <div className="flex gap-2">
+                                  <Input
+                                    placeholder="e.g. code-review, tdd, refactor"
+                                    value={customInput[agent.id] || ''}
+                                    onChange={(e) =>
+                                      setCustomInput((prev) => ({ ...prev, [agent.id]: e.target.value }))
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        addCustomSkill(agent.id);
+                                      }
+                                    }}
+                                  />
+                                  <Button size="sm" onClick={() => addCustomSkill(agent.id)} className="gap-1">
+                                    <Plus className="h-3.5 w-3.5" />
+                                    Add
+                                  </Button>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                  Gemini/Codex/Custom — names are injected as prompt hints.
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                );
+              })
+            )}
+          </div>
         </div>
 
-        <div className="modal-footer">
-          <button className="btn btn-primary" onClick={close}>Done</button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter className="p-5 pt-3 mt-0">
+          <Button variant="gradient" onClick={close}>
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
