@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useApp } from './context/AppContext';
 import Header from './components/layout/Header';
@@ -8,11 +8,16 @@ import PromptInput from './components/pipeline/PromptInput';
 import PhaseIndicator from './components/pipeline/PhaseIndicator';
 import TaskBoard from './components/pipeline/TaskBoard';
 import OutputConsole from './components/output/OutputConsole';
-import AgentModal from './components/config/AgentModal';
-import TaskDetailModal from './components/pipeline/TaskDetailModal';
-import SkillsModal from './components/pipeline/SkillsModal';
+// PermissionModal is always mounted (returns null when no pending request)
+// so it stays eager — Suspense fallbacks aren't useful for it.
 import PermissionModal from './components/permission/PermissionModal';
 import { TooltipProvider } from '@/components/ui/tooltip';
+
+// Modal code is lazy-loaded — only fetched the first time the user opens
+// the corresponding modal. Cuts initial JS parse on cold start.
+const AgentModal = lazy(() => import('./components/config/AgentModal'));
+const TaskDetailModal = lazy(() => import('./components/pipeline/TaskDetailModal'));
+const SkillsModal = lazy(() => import('./components/pipeline/SkillsModal'));
 
 function AuroraBackdrop() {
   return (
@@ -25,8 +30,26 @@ function AuroraBackdrop() {
   );
 }
 
+function useVisibilityPause() {
+  useEffect(() => {
+    const apply = () => {
+      document.body.dataset.paused = document.visibilityState === 'hidden' ? '1' : '';
+    };
+    apply();
+    document.addEventListener('visibilitychange', apply);
+    window.addEventListener('blur', apply);
+    window.addEventListener('focus', apply);
+    return () => {
+      document.removeEventListener('visibilitychange', apply);
+      window.removeEventListener('blur', apply);
+      window.removeEventListener('focus', apply);
+    };
+  }, []);
+}
+
 export default function App() {
   const { state } = useApp();
+  useVisibilityPause();
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -59,9 +82,11 @@ export default function App() {
           </main>
         </div>
         <StatusBar />
-        {state.showAgentModal && <AgentModal />}
-        {state.showTaskDetail && <TaskDetailModal />}
-        {state.showSkillsModal && <SkillsModal />}
+        <Suspense fallback={null}>
+          {state.showAgentModal && <AgentModal />}
+          {state.showTaskDetail && <TaskDetailModal />}
+          {state.showSkillsModal && <SkillsModal />}
+        </Suspense>
         <PermissionModal />
       </div>
     </TooltipProvider>

@@ -92,9 +92,9 @@ function registerIpcHandlers() {
   });
 
   // ─── Skills Handlers ───
-  ipcMain.handle('skills:listClaude', () => {
+  ipcMain.handle('skills:listClaude', (_event, opts) => {
     try {
-      return listClaudeSkills();
+      return listClaudeSkills(opts || {});
     } catch (e) {
       return [];
     }
@@ -114,4 +114,8 @@ function registerIpcHandlers() {
   });
 }
 
-module.exports = { registerIpcHandlers };
+function getConfigStore() {
+  return configStore;
+}
+
+module.exports = { registerIpcHandlers, getConfigStore };

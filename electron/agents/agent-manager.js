@@ -183,14 +183,18 @@ class AgentManager {
   }
 
   /**
-   * Run health check on all agents.
+   * Run health check on all agents in parallel.
    */
   async healthCheckAll() {
-    const results = {};
-    for (const [id, agent] of this.agents) {
-      results[id] = await agent.healthCheck();
-    }
-    return results;
+    const entries = Array.from(this.agents.entries());
+    const results = await Promise.all(
+      entries.map(([id, agent]) =>
+        agent.healthCheck()
+          .then((r) => [id, r])
+          .catch((e) => [id, { available: false, error: e?.message || String(e) }])
+      )
+    );
+    return Object.fromEntries(results);
   }
 
   /**

@@ -15,8 +15,13 @@ class BaseAgent {
     this.cliPath = config.cliPath || config.type; // Path or command name
     this.extraFlags = config.extraFlags || [];
     this.enabled = config.enabled !== false;
-    this.process = null;
-    this.isRunning = false;
+    // Set of currently spawned child processes — supports concurrent execute()
+    // calls on the same agent instance. abort() kills every entry.
+    this._procs = new Set();
+  }
+
+  get isRunning() {
+    return this._procs.size > 0;
   }
 
   /**
@@ -109,27 +114,27 @@ class BaseAgent {
         options.onData(`${cmdLine}\n  (cwd: ${cwd})\n`, 'system');
       }
 
-      this.process = spawn(this.cliPath, args, {
+      const proc = spawn(this.cliPath, args, {
         cwd,
         env: { ...process.env },
         shell: true,
         windowsHide: true,
       });
 
-      this.isRunning = true;
+      this._procs.add(proc);
 
-      this.process.stdin.on('error', () => {});
+      proc.stdin.on('error', () => {});
 
       if (stdinInput !== null) {
         try {
-          this.process.stdin.write(stdinInput);
-          this.process.stdin.end();
+          proc.stdin.write(stdinInput);
+          proc.stdin.end();
         } catch (e) {
           // Process may have exited before stdin write — close event will handle it
         }
       }
 
-      this.process.stdout.on('data', (data) => {
+      proc.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
         if (options.onData) {
@@ -137,7 +142,7 @@ class BaseAgent {
         }
       });
 
-      this.process.stderr.on('data', (data) => {
+      proc.stderr.on('data', (data) => {
         const chunk = data.toString();
         stderr += chunk;
         if (options.onData) {
@@ -145,9 +150,8 @@ class BaseAgent {
         }
       });
 
-      this.process.on('close', (code) => {
-        this.isRunning = false;
-        this.process = null;
+      proc.on('close', (code) => {
+        this._procs.delete(proc);
 
         if (code === 0 || stdout.trim().length > 0) {
           const parsed = this.parseOutput(stdout.trim());
@@ -175,9 +179,8 @@ class BaseAgent {
         }
       });
 
-      this.process.on('error', (err) => {
-        this.isRunning = false;
-        this.process = null;
+      proc.on('error', (err) => {
+        this._procs.delete(proc);
         resolve({
           success: false,
           output: '',
@@ -186,11 +189,14 @@ class BaseAgent {
         });
       });
 
-      // Handle abort signal
+      // Handle abort signal — only kill THIS invocation, not siblings.
       if (options.signal) {
-        options.signal.addEventListener('abort', () => {
-          this.abort();
-        });
+        const onAbort = () => {
+          try { proc.kill('SIGTERM'); } catch {}
+          setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
+        };
+        if (options.signal.aborted) onAbort();
+        else options.signal.addEventListener('abort', onAbort, { once: true });
       }
     });
   }
@@ -241,18 +247,19 @@ class BaseAgent {
   }
 
   /**
-   * Abort the currently running process.
+   * Abort every running process spawned by this agent.
    */
   abort() {
-    if (this.process && this.isRunning) {
-      this.process.kill('SIGTERM');
-      setTimeout(() => {
-        if (this.process) {
-          this.process.kill('SIGKILL');
-        }
-      }, 5000);
-      this.isRunning = false;
+    const procs = Array.from(this._procs);
+    this._procs.clear();
+    for (const p of procs) {
+      try { p.kill('SIGTERM'); } catch {}
     }
+    setTimeout(() => {
+      for (const p of procs) {
+        try { p.kill('SIGKILL'); } catch {}
+      }
+    }, 5000);
   }
 
   /**

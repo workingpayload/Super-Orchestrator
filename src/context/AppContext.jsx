@@ -41,6 +41,10 @@ const initialState = {
   claudeSkills: [], // cached scan of ~/.claude/skills/
   agentSkills: {}, // { agentId: [skillName, ...] }
 
+  // Concurrency (per-run)
+  concurrent: true,
+  maxConcurrency: 4,
+
   // Cost tracking (current run / loaded session)
   costSummary: { totalUsd: 0, byAgent: [] },
 
@@ -156,6 +160,12 @@ function reducer(state, action) {
     case 'CLEAR_AGENT_SKILLS':
       return { ...state, agentSkills: {} };
 
+    case 'SET_CONCURRENT':
+      return { ...state, concurrent: !!action.payload };
+
+    case 'SET_MAX_CONCURRENCY':
+      return { ...state, maxConcurrency: Math.max(1, Number(action.payload) || 1) };
+
     case 'SET_COST':
       return {
         ...state,
@@ -191,6 +201,8 @@ function reducer(state, action) {
         sessions: state.sessions,
         claudeSkills: state.claudeSkills,
         agentSkills: state.agentSkills,
+        concurrent: state.concurrent,
+        maxConcurrency: state.maxConcurrency,
       };
 
     default:
@@ -370,14 +382,15 @@ export function AppProvider({ children }) {
       masterId: masterAgent.id,
       reviewerId: reviewerAgent?.id || null,
       cwd: state.workingDirectory || undefined,
-      concurrent: true,
+      concurrent: state.concurrent,
+      maxConcurrency: state.maxConcurrency,
       maxRevisions: 3,
       agentSkills: state.agentSkills,
     };
 
     const result = await window.electronAPI.orchestrator.start(config);
     return result;
-  }, [state.agents, state.currentPrompt, state.workingDirectory, state.agentSkills]);
+  }, [state.agents, state.currentPrompt, state.workingDirectory, state.agentSkills, state.concurrent, state.maxConcurrency]);
 
   const abortOrchestration = useCallback(async () => {
     if (!window.electronAPI) return;
@@ -478,10 +491,10 @@ export function AppProvider({ children }) {
   }, []);
 
   // ─── Skills Actions ───
-  const loadClaudeSkills = useCallback(async () => {
+  const loadClaudeSkills = useCallback(async (opts = {}) => {
     if (!window.electronAPI || !window.electronAPI.skills) return;
     try {
-      const skills = await window.electronAPI.skills.listClaude();
+      const skills = await window.electronAPI.skills.listClaude(opts);
       dispatch({ type: 'SET_CLAUDE_SKILLS', payload: skills || [] });
     } catch {
       dispatch({ type: 'SET_CLAUDE_SKILLS', payload: [] });

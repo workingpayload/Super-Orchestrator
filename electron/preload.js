@@ -49,7 +49,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Skills
   skills: {
-    listClaude: () => ipcRenderer.invoke('skills:listClaude'),
+    listClaude: (opts) => ipcRenderer.invoke('skills:listClaude', opts || {}),
   },
 
   // Permission bridge

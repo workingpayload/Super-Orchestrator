@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const { registerIpcHandlers } = require('./ipc-handlers');
+const { registerIpcHandlers, getConfigStore } = require('./ipc-handlers');
 
 let mainWindow = null;
 
@@ -80,6 +80,17 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   app.quit();
+});
+
+let _shutdownInFlight = false;
+app.on('before-quit', async (e) => {
+  if (_shutdownInFlight) return;
+  const cs = getConfigStore?.();
+  if (!cs?.flush) return;
+  _shutdownInFlight = true;
+  e.preventDefault();
+  try { await cs.flush(); } catch (_) {}
+  app.exit(0);
 });
 
 app.on('activate', () => {

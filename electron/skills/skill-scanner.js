@@ -3,8 +3,19 @@ const path = require('path');
 const os = require('os');
 
 /**
- * Scans Claude skill directories and returns a flat list of { name, description, source, path }.
- * Skills live under ~/.claude/skills/<slug>/SKILL.md (user) and plugin caches.
+ * Scans Claude skill directories and returns a flat list of
+ * { name, description, source, path }.
+ *
+ * Sources scanned:
+ *   - User skills:    ~/.claude/skills/<slug>/SKILL.md
+ *   - Plugin skills:  ~/.claude/plugins/cache/<plugin>/**\/skills/<slug>/SKILL.md
+ *
+ * Performance notes:
+ *   - Full scan involves a BFS over potentially thousands of plugin
+ *     directories. Previously the scanner ran on every IPC call; now
+ *     the result is cached in memory and invalidated by fs.watch on the
+ *     two skill roots. Subsequent calls are O(1).
+ *   - Pass `force: true` to bypass the cache.
  */
 
 function parseFrontmatter(content) {
@@ -40,6 +51,22 @@ function findSkillFile(dir) {
   return null;
 }
 
+function readFrontmatterOnly(filePath, maxBytes = 4096) {
+  // Read up to the first 4KB; frontmatter blocks are tiny in practice, so
+  // we avoid pulling whole skill bodies (some are kilobytes).
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(maxBytes);
+    const bytes = fs.readSync(fd, buf, 0, maxBytes, 0);
+    return buf.slice(0, bytes).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd != null) { try { fs.closeSync(fd); } catch {} }
+  }
+}
+
 function scanSkillsRoot(root, sourceLabel) {
   const out = [];
   let entries;
@@ -53,7 +80,7 @@ function scanSkillsRoot(root, sourceLabel) {
     const skillFile = findSkillFile(path.join(root, entry.name));
     if (!skillFile) continue;
     try {
-      const content = fs.readFileSync(skillFile, 'utf8');
+      const content = readFrontmatterOnly(skillFile);
       const fm = parseFrontmatter(content);
       out.push({
         name: fm.name || entry.name,
@@ -92,7 +119,7 @@ function walkForSkillsDirs(root, maxDepth = 5) {
   return found;
 }
 
-function listClaudeSkills() {
+function performScan() {
   const home = os.homedir();
   const results = [];
   const seen = new Set();
@@ -130,6 +157,49 @@ function listClaudeSkills() {
 
   results.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   return results;
+}
+
+// ─── Cache + invalidation ───────────────────────────────────────────────
+
+let _cache = null;
+let _watchersAttached = false;
+let _invalidateTimer = null;
+
+function invalidate() {
+  if (_invalidateTimer) return;
+  // Coalesce many fs events from a single edit (editor saves trigger
+  // 2-5 events) into one rescan.
+  _invalidateTimer = setTimeout(() => {
+    _invalidateTimer = null;
+    _cache = null;
+  }, 500);
+}
+
+function attachWatchers() {
+  if (_watchersAttached) return;
+  _watchersAttached = true;
+  const home = os.homedir();
+  const roots = [
+    path.join(home, '.claude', 'skills'),
+    path.join(home, '.claude', 'plugins', 'cache'),
+  ];
+  for (const root of roots) {
+    try {
+      // recursive: true is supported on macOS and Windows but throws on Linux.
+      fs.watch(root, { recursive: true, persistent: false }, invalidate);
+    } catch {
+      // Best-effort. Cache will still serve subsequent calls until the user
+      // hits Rescan.
+    }
+  }
+}
+
+function listClaudeSkills(opts = {}) {
+  const force = opts && opts.force === true;
+  if (!force && _cache) return _cache;
+  _cache = performScan();
+  attachWatchers();
+  return _cache;
 }
 
 module.exports = { listClaudeSkills };

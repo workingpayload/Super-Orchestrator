@@ -50,6 +50,7 @@ class Orchestrator {
       reviewerId,
       cwd,
       concurrent = true,
+      maxConcurrency,
       maxRevisions = 3,
       agentSkills = {},
     } = config;
@@ -139,6 +140,7 @@ class Orchestrator {
         cwd,
         bridgePort,
         concurrent,
+        maxConcurrency,
         agentSkills,
         onTaskUpdate: (task) => {
           this._emit('orchestrator:taskUpdate', task);

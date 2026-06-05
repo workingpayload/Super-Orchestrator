@@ -1,6 +1,6 @@
 import React, { useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Rocket, Square, FolderOpen, Puzzle, Cpu, AlertTriangle, KeyRound } from 'lucide-react';
+import { Rocket, Square, FolderOpen, Puzzle, Cpu, AlertTriangle, KeyRound, GitBranch } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 
 export default function PromptInput() {
   const { state, dispatch, startOrchestration, abortOrchestration, selectDirectory } = useApp();
-  const { currentPrompt, phase, workingDirectory, agents, agentSkills } = state;
+  const { currentPrompt, phase, workingDirectory, agents, agentSkills, concurrent, maxConcurrency } = state;
   const textareaRef = useRef(null);
 
   const isRunning = phase !== 'idle' && phase !== 'completed' && phase !== 'failed' && phase !== 'aborted';
@@ -56,6 +56,43 @@ export default function PromptInput() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1 rounded-md border border-border/60 bg-card/50 px-2 py-1 text-[11px]">
+                <GitBranch className={`h-3.5 w-3.5 ${concurrent ? 'text-primary' : 'text-muted-foreground'}`} />
+                <button
+                  type="button"
+                  onClick={() => dispatch({ type: 'SET_CONCURRENT', payload: !concurrent })}
+                  disabled={isRunning}
+                  className="font-semibold disabled:opacity-50"
+                >
+                  {concurrent ? 'Parallel' : 'Sequential'}
+                </button>
+                {concurrent && (
+                  <>
+                    <span className="text-muted-foreground/60 mx-0.5">·</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={32}
+                      value={maxConcurrency}
+                      disabled={isRunning}
+                      onChange={(e) =>
+                        dispatch({ type: 'SET_MAX_CONCURRENCY', payload: e.target.value })
+                      }
+                      className="w-10 bg-transparent text-center font-mono text-[11px] outline-none focus:text-primary disabled:opacity-50"
+                    />
+                  </>
+                )}
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              {concurrent
+                ? `Run up to ${maxConcurrency} task(s) at once (DAG-aware). Click to disable.`
+                : 'Run tasks one at a time. Click to enable parallel execution.'}
+            </TooltipContent>
+          </Tooltip>
+
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

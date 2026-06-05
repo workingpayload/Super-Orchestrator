@@ -86,11 +86,31 @@ class PermissionBridge {
     const slot = this.pending.get(id);
     if (!slot) return false;
     this.pending.delete(id);
-    const body = JSON.stringify({
-      behavior: decision.behavior === 'allow' ? 'allow' : 'deny',
-      message: decision.message || (decision.behavior === 'allow' ? 'Approved by user' : 'Denied by user'),
-      ...(decision.updatedInput ? { updatedInput: decision.updatedInput } : {}),
-    });
+
+    // Claude Code validates the MCP approval reply against a Zod union:
+    //   allow → { behavior: "allow", updatedInput: <record>, message?: string }
+    //   deny  → { behavior: "deny",  message: <string> }
+    // updatedInput is REQUIRED on allow. If the renderer didn't supply one,
+    // echo back the original tool input the MCP server forwarded.
+    const isAllow = decision.behavior === 'allow';
+    const originalInput =
+      (slot.payload && (slot.payload.input || slot.payload.tool_input)) || {};
+
+    const reply = isAllow
+      ? {
+          behavior: 'allow',
+          updatedInput:
+            decision.updatedInput && typeof decision.updatedInput === 'object'
+              ? decision.updatedInput
+              : originalInput,
+          message: decision.message || 'Approved by user',
+        }
+      : {
+          behavior: 'deny',
+          message: decision.message || 'Denied by user',
+        };
+
+    const body = JSON.stringify(reply);
     try {
       slot.res.writeHead(200, { 'Content-Type': 'application/json' });
       slot.res.end(body);

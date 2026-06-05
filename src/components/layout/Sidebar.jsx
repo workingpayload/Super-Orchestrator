@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   Eye,
+  FilePlus,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Button } from '@/components/ui/button';
@@ -126,8 +127,20 @@ function Section({ icon: Icon, title, count, children, action }) {
 }
 
 export default function Sidebar() {
-  const { state, dispatch, checkAllHealth, loadSession } = useApp();
+  const { state, dispatch, checkAllHealth, loadSession, abortOrchestration } = useApp();
   const { agents, agentHealthStatus } = state;
+
+  const handleNewSession = async () => {
+    const running = ['decomposing', 'executing', 'reviewing', 'revising', 'running'].includes(
+      state.orchestratorStatus
+    );
+    if (running) {
+      const ok = window.confirm('A run is in progress. Abort and start a new session?');
+      if (!ok) return;
+      try { await abortOrchestration?.(); } catch {}
+    }
+    dispatch({ type: 'RESET' });
+  };
 
   useEffect(() => {
     if (agents.length > 0 && window.electronAPI) checkAllHealth();
@@ -203,7 +216,22 @@ export default function Sidebar() {
         {renderGroup(Search, 'Reviewer', reviewerAgents, 'reviewer')}
         <Separator className="my-2" />
 
-        <Section icon={History} title="Recent Sessions" count={state.sessions.length}>
+        <Section
+          icon={History}
+          title="Recent Sessions"
+          count={state.sessions.length}
+          action={
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={handleNewSession}
+              title="New session (clears prompt, tasks, output)"
+            >
+              <FilePlus className="h-3.5 w-3.5" />
+            </Button>
+          }
+        >
           {state.sessions.length === 0 ? (
             <div className="px-2 py-3 text-[11px] text-muted-foreground/70 italic">No sessions yet</div>
           ) : (

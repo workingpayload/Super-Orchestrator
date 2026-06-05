@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ClipboardList,
@@ -193,22 +193,18 @@ export default function TaskBoard() {
   const { state, dispatch, retryTask, retriggerReview } = useApp();
   const { tasks } = state;
 
-  const colTasks = (id) => {
-    switch (id) {
-      case 'queued':
-        return tasks.filter((t) => t.status === 'queued');
-      case 'running':
-        return tasks.filter((t) => t.status === 'running');
-      case 'review':
-        return tasks.filter((t) => t.status === 'completed' && t.reviewStatus === 'revision_needed');
-      case 'done':
-        return tasks.filter(
-          (t) => (t.status === 'completed' && t.reviewStatus !== 'revision_needed') || t.status === 'failed'
-        );
-      default:
-        return [];
+  // Single pass over `tasks` — previously we filtered four separate times
+  // per render and this component re-renders on every CLI chunk.
+  const grouped = useMemo(() => {
+    const g = { queued: [], running: [], review: [], done: [] };
+    for (const t of tasks) {
+      if (t.status === 'queued') g.queued.push(t);
+      else if (t.status === 'running') g.running.push(t);
+      else if (t.status === 'completed' && t.reviewStatus === 'revision_needed') g.review.push(t);
+      else if (t.status === 'completed' || t.status === 'failed') g.done.push(t);
     }
-  };
+    return g;
+  }, [tasks]);
 
   if (tasks.length === 0) {
     return (
@@ -241,7 +237,7 @@ export default function TaskBoard() {
 
       <div className="grid grid-cols-4 gap-3 flex-1 min-h-0">
         {COLUMNS.map((col) => {
-          const colData = colTasks(col.id);
+          const colData = grouped[col.id] || [];
           const Icon = col.icon;
           return (
             <motion.div

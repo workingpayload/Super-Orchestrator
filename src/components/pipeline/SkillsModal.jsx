@@ -96,7 +96,7 @@ export default function SkillsModal() {
         </DialogHeader>
 
         <div className="px-5 py-3 flex items-center gap-2 border-b border-border/60 bg-secondary/20">
-          <Button variant="outline" size="sm" onClick={loadClaudeSkills} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => loadClaudeSkills({ force: true })} className="gap-1.5">
             <RefreshCw className="h-3.5 w-3.5" />
             Rescan
           </Button>

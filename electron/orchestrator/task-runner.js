@@ -13,111 +13,111 @@ function prefixWithSkills(prompt, skills) {
 class TaskRunner {
   constructor(agentManager) {
     this.agentManager = agentManager;
-    this.runningTasks = new Map();
     this.abortController = null;
   }
 
   /**
    * Execute all tasks respecting dependencies.
-   * @param {object[]} tasks - Array of task objects
-   * @param {object} options - { cwd, onTaskUpdate, onOutput, concurrent }
-   * @returns {Promise<object[]>} Updated tasks with results
+   *
+   * Scheduler: pull-based, DAG-aware, parallel.
+   *   - Maintain a pool of in-flight task promises (one entry per task).
+   *   - Whenever a task settles, mark it complete and re-evaluate readiness.
+   *   - Launch every newly-ready task up to `maxConcurrency`, round-robin
+   *     over available worker agents.
+   *   - Each agent supports concurrent execute() calls (BaseAgent tracks
+   *     spawned processes in a Set), so two parallel tasks on one worker
+   *     spawn two CLI processes.
+   *
+   * @param {object[]} tasks
+   * @param {object} options
+   *   - cwd, bridgePort, agentSkills
+   *   - concurrent (bool, default true) — when false, serializes to 1.
+   *   - maxConcurrency (number) — cap on simultaneous tasks. Defaults to
+   *     `tasks.length` when concurrent, else 1.
+   *   - onTaskUpdate, onOutput, onAgentResult
+   * @returns {Promise<object[]>}
    */
   async executeTasks(tasks, options = {}) {
-    const { cwd, bridgePort, onTaskUpdate, onOutput, concurrent = true, agentSkills = {}, onAgentResult } = options;
+    const {
+      cwd, bridgePort, onTaskUpdate, onOutput,
+      concurrent = true,
+      maxConcurrency,
+      agentSkills = {},
+      onAgentResult,
+    } = options;
     this.abortController = new AbortController();
 
-    const completedIds = new Set();
-    const taskMap = new Map(tasks.map(t => [t.id, { ...t }]));
-    const results = new Map();
-
-    // Get available workers
     const workers = this.agentManager.getAgentsByRole('worker');
     if (workers.length === 0) {
       throw new Error('No worker agents configured. Please add at least one worker agent.');
     }
 
-    // Execute tasks in dependency order
-    while (completedIds.size < tasks.length) {
-      if (this.abortController.signal.aborted) {
-        break;
+    const limit = concurrent
+      ? Math.max(1, Number(maxConcurrency) || tasks.length)
+      : 1;
+
+    const completedIds = new Set();
+    const results = new Map();
+    // taskId → in-flight promise resolving to the updated task
+    const inflight = new Map();
+    let rrCursor = 0;
+
+    const launchReady = () => {
+      if (this.abortController.signal.aborted) return;
+      while (inflight.size < limit) {
+        const next = tasks.find(t =>
+          !completedIds.has(t.id) &&
+          !inflight.has(t.id) &&
+          (t.dependencies || []).every(depId => completedIds.has(depId))
+        );
+        if (!next) return;
+
+        const worker = workers[rrCursor % workers.length];
+        rrCursor++;
+
+        const p = this._executeTask(next, worker, {
+          cwd, bridgePort, onTaskUpdate, onOutput, agentSkills, onAgentResult,
+        }).then(t => {
+          inflight.delete(t.id);
+          completedIds.add(t.id);
+          results.set(t.id, t);
+          return t;
+        }).catch(err => {
+          inflight.delete(next.id);
+          completedIds.add(next.id);
+          next.status = 'failed';
+          next.error = err?.message || String(err);
+          results.set(next.id, next);
+          return next;
+        });
+
+        inflight.set(next.id, p);
       }
+    };
 
-      // Find tasks that can run (all dependencies met)
-      const ready = tasks.filter(t =>
-        !completedIds.has(t.id) &&
-        !this.runningTasks.has(t.id) &&
-        t.dependencies.every(depId => completedIds.has(depId))
-      );
+    while (completedIds.size < tasks.length) {
+      launchReady();
 
-      if (ready.length === 0 && this.runningTasks.size === 0) {
-        // Deadlock — remaining tasks have unresolvable dependencies
+      if (inflight.size === 0) {
+        // Nothing in flight and nothing newly ready → unresolvable deps.
         const remaining = tasks.filter(t => !completedIds.has(t.id));
         for (const t of remaining) {
           t.status = 'failed';
           t.error = 'Dependency deadlock — cannot resolve dependencies';
           completedIds.add(t.id);
+          results.set(t.id, t);
           if (onTaskUpdate) onTaskUpdate(t);
         }
         break;
       }
 
-      if (ready.length > 0) {
-        if (concurrent) {
-          // Launch all ready tasks in parallel
-          const promises = ready.map((task, index) => {
-            const worker = workers[index % workers.length];
-            return this._executeTask(task, worker, { cwd, bridgePort, onTaskUpdate, onOutput, agentSkills, onAgentResult });
-          });
+      // Wake up as soon as ANY in-flight task finishes, then re-schedule.
+      await Promise.race(Array.from(inflight.values()));
 
-          // Wait for at least one to complete
-          const completed = await Promise.race(
-            promises.map(p => p.then(t => {
-              completedIds.add(t.id);
-              results.set(t.id, t);
-              return t;
-            }))
-          );
-
-          // Wait for all currently running to settle
-          await Promise.allSettled(
-            Array.from(this.runningTasks.values())
-          );
-
-          // Collect all completed
-          for (const [id, promise] of this.runningTasks) {
-            try {
-              const t = await promise;
-              completedIds.add(t.id);
-              results.set(t.id, t);
-            } catch (e) {
-              completedIds.add(id);
-            }
-          }
-        } else {
-          // Sequential execution
-          for (const task of ready) {
-            if (this.abortController.signal.aborted) break;
-            const worker = workers[0]; // Use first available worker
-            const completed = await this._executeTask(task, worker, { cwd, bridgePort, onTaskUpdate, onOutput, agentSkills, onAgentResult });
-            completedIds.add(completed.id);
-            results.set(completed.id, completed);
-          }
-        }
-      } else {
-        // Wait for running tasks to complete
-        await Promise.allSettled(
-          Array.from(this.runningTasks.values())
-        );
-        for (const [id, promise] of this.runningTasks) {
-          try {
-            const t = await promise;
-            completedIds.add(t.id);
-            results.set(t.id, t);
-          } catch (e) {
-            completedIds.add(id);
-          }
-        }
+      if (this.abortController.signal.aborted) {
+        // Drain remaining without launching new work.
+        await Promise.allSettled(Array.from(inflight.values()));
+        break;
       }
     }
 
@@ -137,51 +137,45 @@ class TaskRunner {
 
     const promptForExec = prefixWithSkills(task.prompt, agentSkills[worker.id]);
 
-    const taskPromise = (async () => {
-      try {
-        const result = await worker.execute(promptForExec, {
-          cwd,
-          bridgePort,
-          signal: this.abortController?.signal,
-          onData: (chunk, source) => {
-            if (onOutput) {
-              onOutput({
-                taskId: task.id,
-                agentName: worker.name,
-                chunk,
-                source,
-                timestamp: Date.now(),
-              });
-            }
-          },
-        });
+    try {
+      const result = await worker.execute(promptForExec, {
+        cwd,
+        bridgePort,
+        signal: this.abortController?.signal,
+        onData: (chunk, source) => {
+          if (onOutput) {
+            onOutput({
+              taskId: task.id,
+              agentName: worker.name,
+              chunk,
+              source,
+              timestamp: Date.now(),
+            });
+          }
+        },
+      });
 
-        task.endTime = Date.now();
+      task.endTime = Date.now();
 
-        if (result.success) {
-          task.status = 'completed';
-          task.output = result.output;
-          task.usage = result.usage || null;
-        } else {
-          task.status = 'failed';
-          task.error = result.error;
-          task.output = result.raw || '';
-        }
-
-        if (onAgentResult) onAgentResult(worker, result);
-      } catch (err) {
-        task.endTime = Date.now();
+      if (result.success) {
+        task.status = 'completed';
+        task.output = result.output;
+        task.usage = result.usage || null;
+      } else {
         task.status = 'failed';
-        task.error = err.message;
+        task.error = result.error;
+        task.output = result.raw || '';
       }
 
-      this.runningTasks.delete(task.id);
-      if (onTaskUpdate) onTaskUpdate({ ...task });
-      return task;
-    })();
+      if (onAgentResult) onAgentResult(worker, result);
+    } catch (err) {
+      task.endTime = Date.now();
+      task.status = 'failed';
+      task.error = err.message;
+    }
 
-    this.runningTasks.set(task.id, taskPromise);
-    return taskPromise;
+    if (onTaskUpdate) onTaskUpdate({ ...task });
+    return task;
   }
 
   /**
@@ -237,7 +231,6 @@ class TaskRunner {
       this.abortController.abort();
     }
     this.agentManager.abortAll();
-    this.runningTasks.clear();
   }
 }
 

@@ -135,3 +135,33 @@
     mask-image: linear-gradient(to bottom, transparent, black 8%, black 92%, transparent);
   }
 }
+
+/* Pause heavy background animations when the window is hidden — saves
+   GPU cycles when the user alt-tabs away. App.jsx toggles data-paused
+   based on document.visibilityState. */
+body[data-paused='1'] .animate-aurora-1,
+body[data-paused='1'] .animate-aurora-2,
+body[data-paused='1'] .animate-float,
+body[data-paused='1'] .animate-shimmer,
+body[data-paused='1'] .animate-pulse-glow,
+body[data-paused='1'] .gradient-text {
+  animation-play-state: paused !important;
+}
+
+/* Respect the user's reduced-motion preference. Eliminates the
+   continuously-running aurora gradients, shimmer, and pulse-glow. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-aurora-1,
+  .animate-aurora-2,
+  .animate-float,
+  .animate-shimmer,
+  .animate-pulse-glow,
+  .gradient-text {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
